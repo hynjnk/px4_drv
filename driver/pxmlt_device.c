@@ -163,34 +163,27 @@ static void pxmlt_device_stream_process(struct ptx_chrdev **chrdev,
 static int pxmlt_device_stream_handler(void *context, void *buf, u32 len)
 {
 	struct pxmlt_stream_context *stream_ctx = context;
-	u8 *ctx_remain_buf = stream_ctx->remain_buf;
 	u32 ctx_remain_len = stream_ctx->remain_len;
 	u8 *p = buf;
 	u32 remain = len;
 
-	if (unlikely(ctx_remain_len)) {
-		if (likely((ctx_remain_len + len) >= PXMLT_DEVICE_TS_SYNC_SIZE)) {
-			u32 t = PXMLT_DEVICE_TS_SYNC_SIZE - ctx_remain_len;
+	while (ctx_remain_len && remain) {
+		u32 copied = min(remain, PXMLT_DEVICE_TS_SYNC_SIZE - ctx_remain_len);
+		u8 *pending = stream_ctx->remain_buf;
 
-			memcpy(ctx_remain_buf + ctx_remain_len, p, t);
-			ctx_remain_len = PXMLT_DEVICE_TS_SYNC_SIZE;
+		memcpy(pending + ctx_remain_len, p, copied);
+		ctx_remain_len += copied;
+		p += copied;
+		remain -= copied;
 
-			pxmlt_device_stream_process(stream_ctx->chrdev,
-						  &ctx_remain_buf,
-						  &ctx_remain_len);
-			if (likely(!ctx_remain_len)) {
-				p += t;
-				remain -= t;
-			}
+		if (ctx_remain_len < PXMLT_DEVICE_TS_SYNC_SIZE)
+			break;
 
-			stream_ctx->remain_len = 0;
-		} else {
-			memcpy(ctx_remain_buf + ctx_remain_len, p, len);
-			stream_ctx->remain_len += len;
-
-			return 0;
-		}
+		pxmlt_device_stream_process(stream_ctx->chrdev, &pending,
+					    &ctx_remain_len);
+		memmove(stream_ctx->remain_buf, pending, ctx_remain_len);
 	}
+	stream_ctx->remain_len = ctx_remain_len;
 
 	pxmlt_device_stream_process(stream_ctx->chrdev, &p, &remain);
 
