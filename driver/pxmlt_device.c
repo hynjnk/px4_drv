@@ -14,16 +14,7 @@
 
 #include "px4_device_params.h"
 #include "firmware.h"
-#include "ts_sync.h"
-
-#define PXMLT_DEVICE_TS_SYNC_COUNT	4
-#define PXMLT_DEVICE_TS_SYNC_SIZE	(188 * PXMLT_DEVICE_TS_SYNC_COUNT)
-
-struct pxmlt_stream_context {
-	struct ptx_chrdev *chrdev[PXMLT_CHRDEV_MAX_NUM];
-	u8 remain_buf[PXMLT_DEVICE_TS_SYNC_SIZE];
-	size_t remain_len;
-};
+#include "pxmlt_stream.h"
 
 static int pxmlt_chrdev_set_lnb_voltage(struct ptx_chrdev *chrdev, int voltage);
 static void pxmlt_device_release(struct kref *kref);
@@ -111,89 +102,6 @@ static int pxmlt_backend_term(struct pxmlt_device *pxmlt)
 	return 0;
 }
 #endif
-
-static void pxmlt_device_stream_process(struct ptx_chrdev **chrdev,
-				      u8 **buf, u32 *len)
-{
-	u8 *p = *buf;
-	u32 remain = *len;
-
-	while (likely(remain)) {
-		u32 i;
-		bool sync_remain = false;
-
-		for (i = 0; i < PXMLT_DEVICE_TS_SYNC_COUNT; i++) {
-			if (likely(((i + 1) * 188) <= remain)) {
-				if (unlikely(!px4_ts_has_tagged_sync(p[i * 188])))
-					break;
-			} else {
-				sync_remain = true;
-				break;
-			}
-		}
-
-		if (unlikely(sync_remain))
-			break;
-
-		if (unlikely(i < PXMLT_DEVICE_TS_SYNC_COUNT)) {
-			p++;
-			remain--;
-			continue;
-		}
-
-		while (likely(remain >= 188 && ((p[0] & 0x8f) == 0x07))) {
-			u8 id = (p[0] & 0x70) >> 4;
-
-			if (likely(id && id < 6)) {
-				p[0] = 0x47;
-				ptx_chrdev_put_stream(chrdev[id - 1], p, 188);
-			}
-
-			p += 188;
-			remain -= 188;
-		}
-	}
-
-	*buf = p;
-	*len = remain;
-
-	return;
-}
-
-static int pxmlt_device_stream_handler(void *context, void *buf, u32 len)
-{
-	struct pxmlt_stream_context *stream_ctx = context;
-	u32 ctx_remain_len = stream_ctx->remain_len;
-	u8 *p = buf;
-	u32 remain = len;
-
-	while (ctx_remain_len && remain) {
-		u32 copied = min(remain, PXMLT_DEVICE_TS_SYNC_SIZE - ctx_remain_len);
-		u8 *pending = stream_ctx->remain_buf;
-
-		memcpy(pending + ctx_remain_len, p, copied);
-		ctx_remain_len += copied;
-		p += copied;
-		remain -= copied;
-
-		if (ctx_remain_len < PXMLT_DEVICE_TS_SYNC_SIZE)
-			break;
-
-		pxmlt_device_stream_process(stream_ctx->chrdev, &pending,
-					    &ctx_remain_len);
-		memmove(stream_ctx->remain_buf, pending, ctx_remain_len);
-	}
-	stream_ctx->remain_len = ctx_remain_len;
-
-	pxmlt_device_stream_process(stream_ctx->chrdev, &p, &remain);
-
-	if (unlikely(remain)) {
-		memcpy(stream_ctx->remain_buf, p, remain);
-		stream_ctx->remain_len = remain;
-	}
-
-	return 0;
-}
 
 static int pxmlt_chrdev_init(struct ptx_chrdev *chrdev)
 {
@@ -684,6 +592,7 @@ static int pxmlt_chrdev_start_capture(struct ptx_chrdev *chrdev)
 		}
 
 		stream_ctx->remain_len = 0;
+		stream_ctx->synchronized = false;
 
 		ret = itedtv_bus_start_streaming(&pxmlt->it930x.bus,
 						 pxmlt_device_stream_handler,
