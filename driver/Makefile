@@ -5,6 +5,7 @@ KDIR := /lib/modules/$(KVER)/build
 PWD := $(shell pwd)
 INSTALL_DIR := /lib/modules/$(KVER)/misc
 VERBOSE := 0
+HOSTCC ?= cc
 
 cmd_prefix := @
 ifneq ($(VERBOSE),0)
@@ -66,6 +67,13 @@ uninstall:
 	fi
 	$(cmd_prefix)depmod -a $(KVER)
 
+check:
+	$(cmd_prefix)set -eu; \
+	test_bin=$$(mktemp); \
+	trap 'rm -f "$$test_bin"' EXIT; \
+	$(HOSTCC) -std=c11 -Wall -Wextra -Werror tests/pxmlt_stream_test.c -o "$$test_bin"; \
+	"$$test_bin"
+
 FORCE:
 
-.PHONY: clean install uninstall FORCE
+.PHONY: check clean install uninstall FORCE
